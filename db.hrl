@@ -1,26 +1,8 @@
 % loop state
--record(s, 
-	{
-		db = [],
-		user = null,
-		nbh = [],
-		qu = []
-	}).
+-record(s, {db, user, nbh = [], qu = [], rc}).
 
 % request state
--record(r,
-	{
-		file = null,
-		path = [],
-		time = null,
-		id = 0
-	}).
+-record(r, {file, time, id, path, data}).
 
-% data state
--record(d,
-	{
-		file = null,
-		data = null,
-		path = [],
-		time = null
-	}).
+% queue state
+-record(q, {file, time, id}).
