@@ -4,86 +4,106 @@
 -include("db.hrl").
 
 % client
--export([req/3]).
+-export([start_db/0, req/5, start_ind/1, view/1, root/2]).
 % backend
--export([loop/1, req_loop/4]).
-% testing
--export([test_y/0]).
+-export([loop/1, req_loop/6, ind_loop/1]).
 
 % TODO add distribution of data
 % TODO broadcast sync, caching, distributed routing
 % TODO data movement
+% TODO file index on network, pass around blocks not files
 
 %
-% Main DB loop
+% DB LOOP
+
+% spawn index request process
+start_db() ->
+	spawn_link(?MODULE, loop, []).
+
 loop(S) ->
 	receive 
 
-		% Reply to request for data
+		% Reply to block request for data
 		{request, R} ->
-			handle(S,R);
+			Ttl = S#s.ttl,
+			case length(R#r.path) of
+				Ttl -> loop(S);
+				_A -> broadcast_handle_block(S,R)
+			end;
 
 		% Received data
-		{data, R} -> 
-			% XXX strange record pattern matching rules
-			[H|T] = R#r.path,
+		{data, (R=#r{path=[H|T]})} -> 
 			H ! {data, R#r{path=T}},
 			loop(S);
 
+		% Data hand out
+		{dist, D={Key, _Data}} ->
+			% kick to random neighbor
+			case lists:keyfind(Key, 2, S#s.db) of
+				#r{key=Key} -> 
+					lists:nth(random:uniform(length(S#s.nbh)), S#s.nbh) ! {dist, D},
+					loop(S);	
+				false -> 
+					loop(S#s{db=[D|S#s.db]}) 
+			end;
+
 		% DB rpc modification
-		{nbh, rpc, Pid} -> 
-			loop(S#s{nbh=[Pid|S#s.nbh]});
+		{nbh, rpc, PidL} -> 
+			loop(S#s{ nbh = lists:umerge(lists:delete(self(),PidL), S#s.nbh) });
 
-		stop -> ok
-
-	end.
-
-handle(S, R) ->
-	% XXX strange record pattern matching rules
-	File=R#r.file, Time=R#r.time, Id=R#r.id,
-
-	% check for previous request 
-	% XXX using tuple ordering of record 
-	case lists:keyfind(File, 2, S#s.qu) of
-
-		% already received, ignore
-		#r{file=File, time=Time, id=Id} ->
-			io:format("~w duplicate, ignore~n", [self()]),
+		{log, rpc, nbh, Pid} ->
+			Pid ! {log, nbh, self(), S#s.nbh},
 			loop(S);
 
-		% incomplete request (new id), forward
-		#r{file=File, time=Time} ->
-			io:format("~w renewed,   forward~n", [self()]),
-			broadcast(S, R),
-			loop(S#s{qu=[R|S#s.qu]});
+		{log, rpc, rc, Pid} ->
+			Pid ! {log, rc, self(), S#s.rc},
+			loop(S);
 
-		% repeat request, fully process
-		#r{file=File} -> 
-			io:format("~w repeat,    process~n", [self()]),
-			dispatch(S, R),
-			loop(S#s{qu=[R|S#s.qu]});
+		stop -> ok;
+		
+		Whoops -> io:format("~w~n", [Whoops])
 
-		% new request, fully process
-		false -> 
-			io:format("~w new,       process~n", [self()]),
-			dispatch(S, R),
-			loop(S#s{qu=[R|S#s.qu]})
 	end.
 
-dispatch(S, R) ->
-	% XXX strange record pattern matching rules
-	File = R#r.file,
-	case lists:keyfind(File, 1, S#s.db) of
-		{File, Data} -> 
-			[H|T] = R#r.path,
+%
+% DB Service API 
+
+broadcast_handle_block(S, (R=#r{key=Key, time=Time, id=Id})) ->
+
+	case L1=lists:filter(fun(E) -> case E of #r{key=Key} -> true; _ -> false end end, S#s.qu) of
+		% new request, fully process
+		[] -> 
+			dispatch(S, R),
+			loop(S#s{qu=[R|S#s.qu], rc=S#s.rc+1});
+		_ -> ok
+	end,
+
+	case L2=lists:filter(fun(E) -> case E of #r{time=Time} -> true; _ -> false end end, L1) of
+		% repeat request, fully process
+		[] -> 
+			dispatch(S, R),
+			loop(S#s{qu=[R|S#s.qu], rc=S#s.rc+1});
+		_ -> ok
+	end,
+
+	case lists:filter(fun(E) -> case E of #r{id=Id} -> true; _ -> false end end, L2) of
+		% incomplete request (new id), forward
+		[] -> 
+			broadcast(S, R),
+			loop(S#s{qu=[R|S#s.qu], rc=S#s.rc+1});
+		% already received, ignore
+		[_] ->
+			loop(S#s{rc=S#s.rc+1})
+	end.
+
+dispatch(S, (R=#r{key=Key, path=[H|T]})) ->
+	case lists:keyfind(Key, 1, S#s.db) of
+		{Key, Data} -> 
 			H ! {data, R#r{path=T, data=Data}};
 		false -> 
 			broadcast(S, R)
 	end.
 
-
-%
-% Service API 
 broadcast(S, R) ->
 	[ request(N, R) || N <- S#s.nbh ].
 
@@ -92,43 +112,53 @@ request(Pid, R) ->
 
 
 %
-% Client API - uses rpc messages
+% INDEX LOOP 
 
-% spawn request process
+start_ind(DB) ->
+	spawn_link(?MODULE, ind_loop, [#i{db=DB}]).
 
-% FIXME kill request after a while?
-req(File, N, DB) ->
-	spawn_link(?MODULE, req_loop, [N, self(), DB, #r{file=File, time=time(), id=0, path=[]}]).
-
-req_loop(0, _, _, _) -> ok;
-req_loop(N, Rec, DB, R) ->
-	% XXX strange record pattern matching rules
-	File=R#r.file,
+% FIXME starting with flat index, single root
+ind_loop( (I=#i{root=Root}) ) -> 
 	receive
-		{data, NR} -> 
-			Rec ! {data, NR},
-			req_loop(N-1, Rec, DB, R)
-		after 100 ->
-			request(DB, R),
-			req_loop(N, Rec, DB, R#r{id=R#r.id+1})
+
+		{root, NewRoot} -> 
+			req(NewRoot, 1, 5, 100, I#i.db),
+			ind_loop(I#i{root=NewRoot});
+
+		{data, #r{key=Root, data=Data}} -> 
+			ind_loop(I#i{i={Root,Data}});
+
+		{view, Pid} ->
+			Pid ! {index, I#i.i},
+			ind_loop(I)
+
 	end.
 
+root(Ind, Root) -> 
+	Ind ! {root, Root}.
+
+view(Ind) -> 
+	Ind ! {view, self()}.
 
 %
-%  Testing
-test_y() ->
-	DB = spawn_link(?MODULE, loop, [#s{user=self(), db=[{crud,0},{junk,0}]}]), 
-	register(mydb, DB),
-	N1 = spawn_link(?MODULE, loop, [#s{nbh=[DB], db=[{crud,1}]}]),
-	N11 = spawn_link(?MODULE, loop, [#s{nbh=[N1], db=[{crud,2},{junk,1}]}]),
-	N12 = spawn_link(?MODULE, loop, [#s{nbh=[N1], db=[{crud,3}]}]),
-	N2 = spawn_link(?MODULE, loop, [#s{nbh=[DB], db=[{crud,4}]}]),
-	N21 = spawn_link(?MODULE, loop, [#s{nbh=[N2], db=[{crud,5},{junk,2}]}]),
-	N22 = spawn_link(?MODULE, loop, [#s{nbh=[N2], db=[{crud,6}]}]),
-	DB ! {nbh, rpc, N1},
-	DB ! {nbh, rpc, N2},
-	N1 ! {nbh, rpc, N11},
-	N1 ! {nbh, rpc, N12},
-	N2 ! {nbh, rpc, N21},
-	N2 ! {nbh, rpc, N22},
-	DB.
+% Client API - uses rpc messages
+
+% spawn block request process
+% FIXME stubbing erasure coding 
+req(Key, N, T, Freq, DB) ->
+	spawn_link(?MODULE, req_loop, [N, T, Freq, self(), DB, #r{key=Key, time=now(), id=0, path=[]}]).
+
+req_loop(0, _, _, Req, _, _) -> 
+	Req ! {data, complete};
+req_loop(_, 0, _, Req, _, _) -> 
+	Req ! {data, fail};
+req_loop(N, T, Freq, Req, DB, R) ->
+	receive
+		{data, _NR} -> 
+			% FIXME should assemble data rather than passing it
+			%Req ! {data, NR},
+			req_loop(N-1, T, Freq, Req, DB, R)
+		after Freq ->
+			request(DB, R),
+			req_loop(N, T-1, Freq, Req, DB, R#r{id=R#r.id+1})
+	end.
