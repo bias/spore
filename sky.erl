@@ -40,11 +40,11 @@ loop(S) ->
 		{dist, D={Key, _Data}} ->
 			% kick to random neighbor
 			case lists:keyfind(Key, 2, S#s.db) of
-				#r{key=Key} -> 
-					lists:nth(random:uniform(length(S#s.nbh)), S#s.nbh) ! {dist, D},
-					loop(S);	
 				false -> 
-					loop(S#s{db=[D|S#s.db]}) 
+					loop(S#s{db=[D|S#s.db]});
+				_ -> 
+					lists:nth(random:uniform(length(S#s.nbh)), S#s.nbh) ! {dist, D},
+					loop(S)
 			end;
 
 		% DB rpc modification
@@ -59,9 +59,7 @@ loop(S) ->
 			Pid ! {log, rc, self(), S#s.rc},
 			loop(S);
 
-		stop -> ok;
-		
-		Whoops -> io:format("~w~n", [Whoops])
+		stop -> ok
 
 	end.
 

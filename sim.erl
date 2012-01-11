@@ -4,7 +4,7 @@
 -include("db.hrl").
 
 % testing
--export([test_u/0, test_u/1, user/7, logger/1, log/0]).
+-export([test_u/0, test_u/1, user/7, logger/2, log/3]).
 
 %
 % programatic databases
@@ -66,22 +66,23 @@ user(Pid, F, Kp, Ms, T, Rc, Dc) ->
 			user(Pid, F, Kp, Ms, T, Rc+1, Dc)
 	end.
 
-logger(DBL) ->
-	Pid = spawn_link(?MODULE, log, []),
+logger(DBL, File) ->
+	Pid = spawn_link(?MODULE, log, [File, length(DBL), 0]),
 	%log(DBL, nbh, Pid),
-	log(DBL, rc, Pid).
+	log_request(DBL, rc, Pid).
 
-log(DBL, nbh, Pid) ->
+log_request(DBL, nbh, Pid) ->
 	[ DB ! {log, rpc, nbh, Pid}  || DB <- DBL ];
-log(DBL, rc, Pid) ->
+log_request(DBL, rc, Pid) ->
 	[ DB ! {log, rpc, rc, Pid}  || DB <- DBL ].
 
-log() ->
+log(File, 0, C) ->
+	io:format(File, "~w~n", [C]);
+log(File, N, C) ->
 	receive
-		{log, nbh, Pid, Nbh} ->
-			[ io:format("\"~w\" -> \"~w\",~n", [Pid, N]) || N <- Nbh ],
-			log();
-		{log, rc, Pid, Rc} ->
-			io:format("\"~w\", ~w~n", [Pid, Rc]),
-			log()
+		%{log, nbh, Pid, Nbh} ->
+		%	[ io:format(File, "\"~w\" -> \"~w\",~n", [Pid, N]) || N <- Nbh ],
+		%	log(File);
+		{log, rc, _Pid, Rc} ->
+			log(File, N-1, C+Rc)
 	end.
