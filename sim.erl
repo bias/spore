@@ -47,13 +47,14 @@ connect(Pid1, Pid2) ->
 	ok.
 
 user(_Pid, _F, _Kp, _Ms, 0, Rc, Dc) ->
-	io:format("~w done with Rc ~w Dc ~w ~n", [self(), Rc, Dc]);
+	%io:format("~w done with Rc ~w Dc ~w ~n", [self(), Rc, Dc]);
+	ok;
 user(Pid, F, Kp, Ms, T, Rc, Dc) ->
 	receive
 		{data, complete} ->
 			user(Pid, F, Kp, Ms, T-1, Rc, Dc+1);
 		{data, fail} ->
-			io:format("~w failed to get file~n", [self()]),
+			%io:format("~w failed to get file~n", [self()]),
 			user(Pid, F, Kp, Ms, T-1, Rc, Dc);
 		{q, Pid} ->
 			Pid ! {Rc, Dc}
@@ -61,7 +62,7 @@ user(Pid, F, Kp, Ms, T, Rc, Dc) ->
 			{A1, A2, A3} = now(),
 			random:seed(A1, A2, A3),
 			File = random:uniform(F),
-			io:format("~w asking for ~w~n", [self(), File]),
+			%io:format("~w asking for ~w~n", [self(), File]),
 			sky:req(File, Kp, 5, 100, Pid),
 			user(Pid, F, Kp, Ms, T, Rc+1, Dc)
 	end.
